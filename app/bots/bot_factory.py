@@ -3,7 +3,7 @@
 명령어 구조:
 - /admin : 관리/설정
 - /single : 단일 디렉터 봇 테스트
-- /multi : 11개 멀티봇 운영 상태/안내
+- /multi : 11개 멀티봇 실제 대화 워크플로우
 """
 
 from __future__ import annotations
@@ -12,11 +12,42 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from app.bots.multi_workflow import run_multi_bot_workflow
 from app.bots.registry import JobMemory, bot_ids, job_memory
 from app.bots.workflow import run_full_workflow
 from app.config.settings import settings
 from app.services.channel_route_service import channel_route_service
 from app.services.gemini_service import gemini_service
+
+
+_ACTIVE_BOTS: dict[str, commands.Bot] = {}
+
+
+CATEGORY_CHOICES = [
+    app_commands.Choice(name="건기식", value="건기식"),
+    app_commands.Choice(name="식품", value="식품"),
+    app_commands.Choice(name="주방", value="주방"),
+    app_commands.Choice(name="개발", value="개발"),
+]
+
+STEP_CHOICES = [
+    app_commands.Choice(name="input / 소싱 분석", value="input"),
+    app_commands.Choice(name="text / 텍스트", value="text"),
+    app_commands.Choice(name="short / 숏폼", value="short"),
+    app_commands.Choice(name="publish / 송출", value="publish"),
+    app_commands.Choice(name="log / 시스템 로그", value="log"),
+    app_commands.Choice(name="dashboard / 대시보드", value="dashboard"),
+    app_commands.Choice(name="meeting / 회의실", value="meeting"),
+]
+
+PLATFORM_CHOICES = [
+    app_commands.Choice(name="인스타", value="인스타"),
+    app_commands.Choice(name="쓰레드", value="쓰레드"),
+    app_commands.Choice(name="블로그", value="블로그"),
+    app_commands.Choice(name="틱톡", value="틱톡"),
+    app_commands.Choice(name="릴스", value="릴스"),
+    app_commands.Choice(name="숏폼", value="숏폼"),
+]
 
 
 def build_intents() -> discord.Intents:
@@ -36,8 +67,10 @@ def create_bot(role_key: str, command_prefix: str = "!") -> commands.Bot:
             bot_ids[role_key] = bot.user.id
 
             try:
+                # 슬래시 명령어는 director 봇에만 등록되어 있음.
                 synced = await bot.tree.sync()
-                print(f"✅ slash commands synced for {role_key}: {len(synced)}개", flush=True)
+                if synced:
+                    print(f"✅ slash commands synced for {role_key}: {len(synced)}개", flush=True)
             except Exception as exc:
                 print(f"❌ slash command sync failed for {role_key}: {exc}", flush=True)
 
@@ -112,41 +145,11 @@ def _format_routes(interaction: discord.Interaction) -> str:
     return "\n".join(lines)
 
 
-CATEGORY_CHOICES = [
-    app_commands.Choice(name="건기식", value="건기식"),
-    app_commands.Choice(name="식품", value="식품"),
-    app_commands.Choice(name="주방", value="주방"),
-    app_commands.Choice(name="개발", value="개발"),
-]
-
-STEP_CHOICES = [
-    app_commands.Choice(name="input / 소싱 분석", value="input"),
-    app_commands.Choice(name="text / 텍스트", value="text"),
-    app_commands.Choice(name="short / 숏폼", value="short"),
-    app_commands.Choice(name="publish / 송출", value="publish"),
-    app_commands.Choice(name="log / 시스템 로그", value="log"),
-    app_commands.Choice(name="dashboard / 대시보드", value="dashboard"),
-    app_commands.Choice(name="meeting / 회의실", value="meeting"),
-]
-
-PLATFORM_CHOICES = [
-    app_commands.Choice(name="인스타", value="인스타"),
-    app_commands.Choice(name="쓰레드", value="쓰레드"),
-    app_commands.Choice(name="블로그", value="블로그"),
-    app_commands.Choice(name="틱톡", value="틱톡"),
-    app_commands.Choice(name="릴스", value="릴스"),
-    app_commands.Choice(name="숏폼", value="숏폼"),
-]
-
-
 class AdminCommands(app_commands.Group):
     """관리/설정용 슬래시 명령어 그룹."""
 
     def __init__(self) -> None:
-        super().__init__(
-            name="admin",
-            description="스튜디오 오롯 봇 관리 명령어",
-        )
+        super().__init__(name="admin", description="스튜디오 오롯 봇 관리 명령어")
 
     @app_commands.command(name="상태", description="봇 실행 상태와 환경 설정을 확인합니다.")
     async def status(self, interaction: discord.Interaction) -> None:
@@ -154,7 +157,8 @@ class AdminCommands(app_commands.Group):
             "✅ STUDIO OROT 봇 온라인\n"
             f"- SINGLE_BOT_MODE: `{settings.single_bot_mode}`\n"
             f"- USE_MOCK_GEMINI: `{settings.use_mock_gemini}`\n"
-            f"- ENABLE_MAKE_WEBHOOK: `{settings.enable_make_webhook}`",
+            f"- ENABLE_MAKE_WEBHOOK: `{settings.enable_make_webhook}`\n"
+            f"- ACTIVE_BOTS: `{len(_ACTIVE_BOTS)}`",
             ephemeral=True,
         )
 
@@ -167,15 +171,9 @@ class AdminCommands(app_commands.Group):
                 persona_key="director",
                 prompt="현재 Gemini 연결 상태를 한 줄로 설명해주세요.",
             )
-            await interaction.followup.send(
-                f"✅ Gemini 테스트 완료\n\n응답:\n{response}",
-                ephemeral=True,
-            )
+            await interaction.followup.send(f"✅ Gemini 테스트 완료\n\n응답:\n{response}", ephemeral=True)
         except Exception as exc:
-            await interaction.followup.send(
-                f"❌ Gemini 연결 실패\n```{exc}```",
-                ephemeral=True,
-            )
+            await interaction.followup.send(f"❌ Gemini 연결 실패\n```{exc}```", ephemeral=True)
 
     @app_commands.command(name="채널목록", description="저장된 채널 라우팅 목록을 확인합니다.")
     async def list_channel_routes(self, interaction: discord.Interaction) -> None:
@@ -197,7 +195,6 @@ class AdminCommands(app_commands.Group):
         try:
             normalized_category = channel_route_service.normalize_category(category.value)
             normalized_step = channel_route_service.normalize_step(step.value)
-
             channel_route_service.set_route(normalized_category, normalized_step, channel.id)
 
             await interaction.response.send_message(
@@ -209,10 +206,7 @@ class AdminCommands(app_commands.Group):
                 ephemeral=True,
             )
         except Exception as exc:
-            await interaction.response.send_message(
-                f"❌ 채널 설정 실패\n```{exc}```",
-                ephemeral=True,
-            )
+            await interaction.response.send_message(f"❌ 채널 설정 실패\n```{exc}```", ephemeral=True)
 
     @app_commands.command(name="현재채널설정", description="현재 채널을 카테고리/단계 출력 채널로 저장합니다.")
     @app_commands.describe(category="카테고리", step="작업 단계")
@@ -227,21 +221,13 @@ class AdminCommands(app_commands.Group):
             return
 
         if not isinstance(interaction.channel, discord.TextChannel):
-            await interaction.response.send_message(
-                "❌ 텍스트 채널에서만 사용할 수 있습니다.",
-                ephemeral=True,
-            )
+            await interaction.response.send_message("❌ 텍스트 채널에서만 사용할 수 있습니다.", ephemeral=True)
             return
 
         try:
             normalized_category = channel_route_service.normalize_category(category.value)
             normalized_step = channel_route_service.normalize_step(step.value)
-
-            channel_route_service.set_route(
-                normalized_category,
-                normalized_step,
-                interaction.channel.id,
-            )
+            channel_route_service.set_route(normalized_category, normalized_step, interaction.channel.id)
 
             await interaction.response.send_message(
                 "✅ 현재 채널 등록 완료\n"
@@ -252,10 +238,7 @@ class AdminCommands(app_commands.Group):
                 ephemeral=True,
             )
         except Exception as exc:
-            await interaction.response.send_message(
-                f"❌ 현재 채널 설정 실패\n```{exc}```",
-                ephemeral=True,
-            )
+            await interaction.response.send_message(f"❌ 현재 채널 설정 실패\n```{exc}```", ephemeral=True)
 
     @app_commands.command(name="자동세팅", description="서버의 채널 이름을 자동 검색해서 라우팅을 등록합니다.")
     async def auto_setup_channels(self, interaction: discord.Interaction) -> None:
@@ -290,6 +273,7 @@ class AdminCommands(app_commands.Group):
                 "text": "개발-텍스트-pvw",
                 "short": "개발-숏폼-pvw",
                 "publish": "개발-송출-pgm",
+                "meeting": "개발-회의실",
             },
         }
 
@@ -311,10 +295,8 @@ class AdminCommands(app_commands.Group):
                     failed.append(f"❌ {category} / {step} → {channel_name}: {exc}")
 
         message = ["🏢 자동 채널 세팅 완료\n"]
-
         if success:
             message.append("\n".join(success))
-
         if failed:
             message.append("\n\n찾지 못했거나 실패한 채널:\n" + "\n".join(failed))
 
@@ -339,29 +321,17 @@ class AdminCommands(app_commands.Group):
                 ephemeral=True,
             )
         except Exception as exc:
-            await interaction.response.send_message(
-                f"❌ 초기화 실패\n```{exc}```",
-                ephemeral=True,
-            )
+            await interaction.response.send_message(f"❌ 초기화 실패\n```{exc}```", ephemeral=True)
 
 
 class SingleCommands(app_commands.Group):
     """싱글봇 테스트/운영용 슬래시 명령어 그룹."""
 
     def __init__(self) -> None:
-        super().__init__(
-            name="single",
-            description="단일 디렉터 봇 테스트 명령어",
-        )
+        super().__init__(name="single", description="단일 디렉터 봇 테스트 명령어")
 
-    @app_commands.command(name="테스트기획", description="이미지 없이 전체 워크플로우를 테스트합니다.")
-    @app_commands.describe(
-        category="카테고리",
-        platform="플랫폼",
-        trigger_word="댓글 유도 단어",
-        coupang_link="쿠팡 파트너스 링크",
-        topic="기획 주제",
-    )
+    @app_commands.command(name="테스트기획", description="디렉터 봇 하나가 전체 워크플로우를 수행합니다.")
+    @app_commands.describe(category="카테고리", platform="플랫폼", trigger_word="댓글 유도 단어", coupang_link="쿠팡 링크", topic="기획 주제")
     @app_commands.choices(category=CATEGORY_CHOICES, platform=PLATFORM_CHOICES)
     async def test_planning(
         self,
@@ -374,109 +344,33 @@ class SingleCommands(app_commands.Group):
     ) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
 
-        try:
-            memory = JobMemory(
-                category=channel_route_service.normalize_category(category.value),
-                platform=platform.value,
-                trigger_word=trigger_word,
-                coupang_link=coupang_link,
-                topic=topic,
-                image_available=False,
-            )
+        memory = JobMemory(
+            category=channel_route_service.normalize_category(category.value),
+            platform=platform.value,
+            trigger_word=trigger_word,
+            coupang_link=coupang_link,
+            topic=topic,
+            image_available=False,
+        )
+        if interaction.channel:
+            job_memory[interaction.channel.id] = memory
 
-            if interaction.channel:
-                job_memory[interaction.channel.id] = memory
-
-            await interaction.followup.send(
-                "🧪 이미지 없는 테스트 기획을 시작합니다.\n"
-                "저장된 채널 설정이 있으면 단계별 결과가 지정 채널로 이동합니다.",
-                ephemeral=True,
-            )
-
-            await run_full_workflow(
-                interaction.channel,
-                memory,
-                image=None,
-                guild=interaction.guild,
-            )
-
-        except Exception as exc:
-            await interaction.followup.send(
-                f"❌ 테스트 기획 실패\n```{exc}```",
-                ephemeral=True,
-            )
-
-    @app_commands.command(name="기획시작", description="텍스트 기반 기획을 시작합니다.")
-    @app_commands.describe(
-        category="카테고리",
-        platform="플랫폼",
-        trigger_word="댓글 유도 단어",
-        coupang_link="쿠팡 파트너스 링크",
-        topic="기획 주제",
-    )
-    @app_commands.choices(category=CATEGORY_CHOICES, platform=PLATFORM_CHOICES)
-    async def start_planning(
-        self,
-        interaction: discord.Interaction,
-        category: app_commands.Choice[str],
-        platform: app_commands.Choice[str],
-        trigger_word: str,
-        coupang_link: str,
-        topic: str,
-    ) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
-
-        try:
-            memory = JobMemory(
-                category=channel_route_service.normalize_category(category.value),
-                platform=platform.value,
-                trigger_word=trigger_word,
-                coupang_link=coupang_link,
-                topic=topic,
-                image_available=False,
-            )
-
-            if interaction.channel:
-                job_memory[interaction.channel.id] = memory
-
-            await interaction.followup.send(
-                "📢 신규 오더 접수\n"
-                f"- 카테고리: `{memory.category}`\n"
-                f"- 플랫폼: `{platform.value}`\n"
-                f"- 댓글 단어: `{trigger_word}`\n"
-                f"- 주제: `{topic}`\n"
-                "슬래시 버전은 현재 이미지 없이 진행합니다.",
-                ephemeral=True,
-            )
-
-            await run_full_workflow(
-                interaction.channel,
-                memory,
-                image=None,
-                guild=interaction.guild,
-            )
-
-        except Exception as exc:
-            await interaction.followup.send(
-                f"❌ 기획 시작 실패\n```{exc}```",
-                ephemeral=True,
-            )
+        await interaction.followup.send("🧪 싱글봇 테스트 기획을 시작합니다.", ephemeral=True)
+        await run_full_workflow(interaction.channel, memory, image=None, guild=interaction.guild)
 
 
 class MultiCommands(app_commands.Group):
     """멀티봇 운영용 슬래시 명령어 그룹."""
 
     def __init__(self) -> None:
-        super().__init__(
-            name="multi",
-            description="11개 멀티봇 운영 명령어",
-        )
+        super().__init__(name="multi", description="11개 멀티봇 실제 대화 명령어")
 
     @app_commands.command(name="상태", description="멀티봇 모드 상태와 봇 ID 매핑을 확인합니다.")
     async def multi_status(self, interaction: discord.Interaction) -> None:
         lines = [
             "🤖 **멀티봇 상태**",
             f"- SINGLE_BOT_MODE: `{settings.single_bot_mode}`",
+            f"- ACTIVE_BOTS: `{len(_ACTIVE_BOTS)}`",
             "",
             "**등록된 봇 ID**",
         ]
@@ -489,6 +383,121 @@ class MultiCommands(app_commands.Group):
 
         await _send_long_response(interaction, "\n".join(lines), ephemeral=True)
 
+    @app_commands.command(name="테스트기획", description="11개 봇이 실제 대화하듯 전체 워크플로우를 수행합니다.")
+    @app_commands.describe(category="카테고리", platform="플랫폼", trigger_word="댓글 유도 단어", coupang_link="쿠팡 링크", topic="기획 주제")
+    @app_commands.choices(category=CATEGORY_CHOICES, platform=PLATFORM_CHOICES)
+    async def multi_test_planning(
+        self,
+        interaction: discord.Interaction,
+        category: app_commands.Choice[str],
+        platform: app_commands.Choice[str],
+        trigger_word: str,
+        coupang_link: str,
+        topic: str,
+    ) -> None:
+        if settings.single_bot_mode:
+            await interaction.response.send_message(
+                "❌ 현재 SINGLE_BOT_MODE=true 입니다.\n"
+                "멀티봇 대화 모드는 `.env`에서 `SINGLE_BOT_MODE=false`로 바꾼 뒤 재시작해야 합니다.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        memory = JobMemory(
+            category=channel_route_service.normalize_category(category.value),
+            platform=platform.value,
+            trigger_word=trigger_word,
+            coupang_link=coupang_link,
+            topic=topic,
+            image_available=False,
+        )
+        if interaction.channel:
+            job_memory[interaction.channel.id] = memory
+
+        await interaction.followup.send(
+            "🎬 멀티봇 실제 대화 워크플로우를 시작합니다.\n"
+            "각 담당 봇이 지정된 채널에 직접 메시지를 보냅니다.",
+            ephemeral=True,
+        )
+
+        await run_multi_bot_workflow(
+            _ACTIVE_BOTS,
+            interaction.channel,
+            memory,
+            image=None,
+            guild=interaction.guild,
+        )
+
+    @app_commands.command(name="기획시작", description="11개 봇 실제 대화 모드로 이미지 포함 기획을 시작합니다.")
+    @app_commands.describe(
+        category="카테고리",
+        platform="플랫폼",
+        trigger_word="댓글 유도 단어",
+        coupang_link="쿠팡 링크",
+        topic="기획 주제",
+        image="상품 이미지",
+    )
+    @app_commands.choices(category=CATEGORY_CHOICES, platform=PLATFORM_CHOICES)
+    async def multi_start_planning(
+        self,
+        interaction: discord.Interaction,
+        category: app_commands.Choice[str],
+        platform: app_commands.Choice[str],
+        trigger_word: str,
+        coupang_link: str,
+        topic: str,
+        image: discord.Attachment | None = None,
+    ) -> None:
+        if settings.single_bot_mode:
+            await interaction.response.send_message(
+                "❌ 현재 SINGLE_BOT_MODE=true 입니다.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        pil_image = None
+
+        if image is not None:
+            if not image.content_type or not image.content_type.startswith("image/"):
+                await interaction.followup.send("❌ 이미지 파일만 첨부할 수 있습니다.", ephemeral=True)
+                return
+
+            import io
+            from PIL import Image
+
+            raw = await image.read()
+            pil_image = Image.open(io.BytesIO(raw)).convert("RGB")
+
+        memory = JobMemory(
+            category=channel_route_service.normalize_category(category.value),
+            platform=platform.value,
+            trigger_word=trigger_word,
+            coupang_link=coupang_link,
+            topic=topic,
+            image_available=pil_image is not None,
+        )
+
+        if interaction.channel:
+            job_memory[interaction.channel.id] = memory
+
+        await interaction.followup.send(
+            "🎬 멀티봇 이미지 기획을 시작합니다."
+            if pil_image else "🎬 멀티봇 텍스트 기획을 시작합니다.",
+            ephemeral=True,
+        )
+
+        await run_multi_bot_workflow(
+            _ACTIVE_BOTS,
+            interaction.channel,
+            memory,
+            image=pil_image,
+            guild=interaction.guild,
+        )
+
     @app_commands.command(name="안내", description="싱글봇/멀티봇 명령어 사용 방식을 안내합니다.")
     async def multi_help(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_message(
@@ -499,12 +508,11 @@ class MultiCommands(app_commands.Group):
             "- `/admin 자동세팅`\n"
             "- `/admin 채널목록`\n\n"
             "**단일 봇 테스트**\n"
-            "- `/single 테스트기획`\n"
-            "- `/single 기획시작`\n\n"
-            "**멀티봇 운영**\n"
+            "- `/single 테스트기획`\n\n"
+            "**멀티봇 실제 대화**\n"
             "- `/multi 상태`\n"
-            "- `/multi 안내`\n\n"
-            "현재 워크플로우 실행은 director 봇이 담당합니다.",
+            "- `/multi 테스트기획`\n"
+            "- `/multi 기획시작`",
             ephemeral=True,
         )
 
@@ -525,6 +533,8 @@ def create_single_bot() -> commands.Bot:
     """로컬 테스트용 단일 봇."""
     bot = create_bot("director", command_prefix="!")
     register_slash_commands(bot)
+    _ACTIVE_BOTS.clear()
+    _ACTIVE_BOTS["director"] = bot
     return bot
 
 
@@ -532,7 +542,7 @@ def create_multi_bots() -> dict[str, commands.Bot]:
     """11개 봇 객체를 생성합니다.
 
     Slash command는 director 봇에만 등록합니다.
-    나머지 봇은 역할별 작업 실행자로 확장할 수 있습니다.
+    워크플로우 메시지는 각 담당 봇이 직접 보냅니다.
     """
     bots = {
         "director": create_bot("director", "!"),
@@ -549,4 +559,8 @@ def create_multi_bots() -> dict[str, commands.Bot]:
     }
 
     register_slash_commands(bots["director"])
+
+    _ACTIVE_BOTS.clear()
+    _ACTIVE_BOTS.update(bots)
+
     return bots

@@ -22,11 +22,11 @@ class GeminiService:
     def __init__(self) -> None:
         self.mock_mode = settings.use_mock_gemini or not settings.google_api_key
 
-        self.primary_model = "gemini-2.5-pro"
+        self.primary_model = "gemini-3.1-flash-lite-preview"
         self.fallback_models = [
+            "gemini-2.5-pro",
             "gemini-2.5-flash",
             "gemini-2.0-flash",
-            "gemini-1.5-flash",
         ]
 
         if not self.mock_mode:

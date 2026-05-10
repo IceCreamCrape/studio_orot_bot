@@ -1,7 +1,23 @@
 """Discord 채널 라우팅 설정 저장소.
 
-명령어로 지정한 채널을 JSON 파일에 저장합니다.
-Docker 재시작 후에도 유지되도록 기본 저장 위치는 /data/channel_routes.json 입니다.
+공통 라우팅을 지원합니다.
+
+예:
+{
+  "공통": {
+    "meeting": 123,
+    "log": 456,
+    "dashboard": 789
+  },
+  "건기식": {
+    "input": 111,
+    "text": 222,
+    "short": 333,
+    "publish": 444
+  }
+}
+
+카테고리별 meeting/log/dashboard가 없으면 공통 채널을 자동으로 사용합니다.
 """
 
 from __future__ import annotations
@@ -12,7 +28,7 @@ from pathlib import Path
 import discord
 
 
-VALID_CATEGORIES = {"건기식", "식품", "주방"}
+VALID_CATEGORIES = {"공통", "건기식", "식품", "주방", "개발"}
 VALID_STEPS = {"input", "text", "short", "publish", "log", "dashboard", "meeting"}
 
 
@@ -26,7 +42,6 @@ class ChannelRouteService:
         self.load()
 
     def load(self) -> None:
-        """JSON 파일에서 라우팅 정보를 읽습니다."""
         if not self.path.exists():
             self._data = {}
             return
@@ -41,34 +56,42 @@ class ChannelRouteService:
             self._data = {}
 
     def save(self) -> None:
-        """현재 라우팅 정보를 JSON 파일에 저장합니다."""
         self.path.write_text(
             json.dumps(self._data, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
     def set_route(self, category: str, step: str, channel_id: int) -> None:
-        """특정 카테고리/단계의 출력 채널을 저장합니다."""
         category = self.normalize_category(category)
         step = self.normalize_step(step)
+
         self._data.setdefault(category, {})
         self._data[category][step] = int(channel_id)
         self.save()
 
     def clear_category(self, category: str) -> None:
-        """특정 카테고리의 라우팅 설정을 삭제합니다."""
         category = self.normalize_category(category)
         self._data.pop(category, None)
         self.save()
 
     def get_channel_id(self, category: str, step: str) -> int | None:
-        """저장된 채널 ID를 반환합니다."""
+        """저장된 채널 ID를 반환합니다.
+
+        meeting/log/dashboard는 카테고리별 설정이 없으면 공통 설정을 사용합니다.
+        """
         category = self.normalize_category(category)
         step = self.normalize_step(step)
-        return self._data.get(category, {}).get(step)
+
+        direct = self._data.get(category, {}).get(step)
+        if direct is not None:
+            return direct
+
+        if step in {"meeting", "log", "dashboard"}:
+            return self._data.get("공통", {}).get(step)
+
+        return None
 
     def get_routes(self) -> dict[str, dict[str, int]]:
-        """전체 라우팅 설정을 반환합니다."""
         return self._data
 
     async def resolve_channel(
@@ -78,7 +101,6 @@ class ChannelRouteService:
         category: str,
         step: str,
     ) -> discord.abc.Messageable:
-        """저장된 채널이 있으면 그 채널을, 없으면 현재 채널을 반환합니다."""
         if guild is None:
             return fallback_channel
 
@@ -92,10 +114,22 @@ class ChannelRouteService:
 
         return channel
 
+    async def resolve_common_channel(
+        self,
+        guild: discord.Guild | None,
+        fallback_channel: discord.abc.Messageable,
+        step: str,
+    ) -> discord.abc.Messageable:
+        """공통 채널을 가져옵니다."""
+        return await self.resolve_channel(guild, fallback_channel, "공통", step)
+
     @staticmethod
     def normalize_category(category: str) -> str:
-        """카테고리 별칭을 표준 이름으로 정리합니다."""
         aliases = {
+            "common": "공통",
+            "global": "공통",
+            "main": "공통",
+            "system": "공통",
             "health": "건기식",
             "healthy": "건기식",
             "건강": "건기식",
@@ -103,6 +137,8 @@ class ChannelRouteService:
             "kitchen": "주방",
             "living": "주방",
             "리빙": "주방",
+            "dev": "개발",
+            "test": "개발",
         }
         value = aliases.get(category.strip(), category.strip())
         if value not in VALID_CATEGORIES:
@@ -111,7 +147,6 @@ class ChannelRouteService:
 
     @staticmethod
     def normalize_step(step: str) -> str:
-        """단계 별칭을 표준 이름으로 정리합니다."""
         aliases = {
             "소싱": "input",
             "분석": "input",
@@ -126,8 +161,10 @@ class ChannelRouteService:
             "발행": "publish",
             "최종": "publish",
             "로그": "log",
+            "시스템로그": "log",
             "대시보드": "dashboard",
             "회의실": "meeting",
+            "회의": "meeting",
         }
         value = aliases.get(step.strip(), step.strip())
         if value not in VALID_STEPS:
