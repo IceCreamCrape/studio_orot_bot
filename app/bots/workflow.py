@@ -1,8 +1,7 @@
 """콘텐츠 제작 워크플로우.
 
-SINGLE_BOT_MODE에서는 한 개 봇이 이 클래스를 호출해 전체 프로세스를 순서대로 수행합니다.
-MULTI_BOT_MODE에서는 각 역할 봇의 메시지 이벤트에서 이 로직을 나누어 호출할 수 있도록
-함수를 잘게 분리해두었습니다.
+!채널설정 으로 저장된 채널이 있으면 단계별 결과를 해당 채널로 보냅니다.
+없으면 명령어를 입력한 현재 채널로 출력합니다.
 """
 
 from __future__ import annotations
@@ -11,6 +10,7 @@ import discord
 
 from app.bots.approval_view import ApprovalView
 from app.bots.registry import JobMemory
+from app.services.channel_route_service import channel_route_service
 from app.services.gemini_service import gemini_service
 from app.utils.discord_format import make_section_embed
 
@@ -35,17 +35,30 @@ def select_creative(platform: str) -> str:
     return "creative_instagram"
 
 
+async def _route_channel(
+    origin_channel: discord.abc.Messageable,
+    guild: discord.Guild | None,
+    category: str,
+    step: str,
+) -> discord.abc.Messageable:
+    """단계별 출력 채널을 가져옵니다."""
+    return await channel_route_service.resolve_channel(
+        guild=guild,
+        fallback_channel=origin_channel,
+        category=category,
+        step=step,
+    )
+
+
 async def run_full_workflow(
     channel: discord.abc.Messageable,
     memory: JobMemory,
     image=None,
+    guild: discord.Guild | None = None,
 ) -> str:
-    """단일 봇 모드에서 전체 워크플로우를 한 번에 실행합니다.
+    """단일 봇 모드에서 전체 워크플로우를 한 번에 실행합니다."""
 
-    Discord 안에서 테스트하기 쉽게 모든 단계를 순서대로 출력합니다.
-    """
-
-    # 1. 상품/카테고리 분석
+    # 1. 상품/카테고리 분석 → input 채널
     analyst_key = select_analyst(memory.category)
     analysis_prompt = (
         f"다음 상품을 분석하세요.\n"
@@ -56,18 +69,20 @@ async def run_full_workflow(
     )
     analysis = await gemini_service.generate(analyst_key, analysis_prompt, image=image)
     memory.add_step("상품 분석", analysis)
-    await channel.send(embed=make_section_embed("📊 1단계: 상품 분석", analysis))
+    input_channel = await _route_channel(channel, guild, memory.category, "input")
+    await input_channel.send(embed=make_section_embed("📊 1단계: 상품 분석", analysis))
 
-    # 2. 타겟 전략
+    # 2. 타겟 전략 → text 채널
     strategy_prompt = (
         f"{memory.as_context()}\n\n"
         "위 분석을 바탕으로 타겟 고객의 Pain Point와 구매 설득 방향을 작성하세요."
     )
     strategy = await gemini_service.generate("marketer_strategy", strategy_prompt)
     memory.add_step("타겟 전략", strategy)
-    await channel.send(embed=make_section_embed("🎯 2단계: 타겟 전략", strategy))
+    text_channel = await _route_channel(channel, guild, memory.category, "text")
+    await text_channel.send(embed=make_section_embed("🎯 2단계: 타겟 전략", strategy))
 
-    # 3. 플랫폼별 콘텐츠 생성
+    # 3. 플랫폼별 콘텐츠 생성 → text 또는 short 채널
     creative_key = select_creative(memory.platform)
     creative_prompt = (
         f"{memory.as_context()}\n\n"
@@ -76,9 +91,12 @@ async def run_full_workflow(
     )
     creative = await gemini_service.generate(creative_key, creative_prompt)
     memory.add_step("콘텐츠 초안", creative)
-    await channel.send(embed=make_section_embed("✍️ 3단계: 콘텐츠 초안", creative))
 
-    # 4. 블로그일 경우 썸네일 프롬프트도 생성
+    creative_step = "short" if memory.platform in {"틱톡", "릴스", "숏폼"} else "text"
+    creative_channel = await _route_channel(channel, guild, memory.category, creative_step)
+    await creative_channel.send(embed=make_section_embed("✍️ 3단계: 콘텐츠 초안", creative))
+
+    # 4. 블로그일 경우 썸네일 프롬프트도 text 채널
     if memory.platform == "블로그":
         visual_prompt = (
             f"{memory.as_context()}\n\n"
@@ -86,18 +104,18 @@ async def run_full_workflow(
         )
         visual = await gemini_service.generate("creative_visual", visual_prompt)
         memory.add_step("비주얼 프롬프트", visual)
-        await channel.send(embed=make_section_embed("🖼️ 4단계: 비주얼 프롬프트", visual))
+        await text_channel.send(embed=make_section_embed("🖼️ 4단계: 비주얼 프롬프트", visual))
 
-    # 5. 해시태그
+    # 5. 해시태그 → text 채널
     tag_prompt = (
         f"{memory.as_context()}\n\n"
         f"{memory.platform}에 맞는 해시태그 세트를 제안하세요."
     )
     tags = await gemini_service.generate("marketer_tag", tag_prompt)
     memory.add_step("해시태그", tags)
-    await channel.send(embed=make_section_embed("🏷️ 5단계: 해시태그", tags))
+    await text_channel.send(embed=make_section_embed("🏷️ 5단계: 해시태그", tags))
 
-    # 6. 최종 검수
+    # 6. 최종 검수 → publish 채널
     director_prompt = (
         f"{memory.as_context()}\n\n"
         "최종 게시물로 다듬으세요. "
@@ -107,13 +125,14 @@ async def run_full_workflow(
     final_content = await gemini_service.generate("director", director_prompt)
     memory.add_step("최종 검수", final_content)
 
+    publish_channel = await _route_channel(channel, guild, memory.category, "publish")
     view = ApprovalView(
         final_content=final_content,
         trigger_word=memory.trigger_word,
         coupang_link=memory.coupang_link,
         platform=memory.platform,
     )
-    await channel.send(
+    await publish_channel.send(
         embed=make_section_embed("👑 최종 검수 및 발행 대기", final_content),
         view=view,
     )

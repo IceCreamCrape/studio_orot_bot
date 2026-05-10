@@ -10,14 +10,14 @@ from app.config.settings import settings
 
 
 def _require_token(name: str, value: str | None) -> str:
-    """토큰 누락 시 알기 쉬운 에러를 출력."""
+    """토큰 누락 시 알기 쉬운 에러를 출력합니다."""
     if not value:
         raise RuntimeError(f"{name} 값이 비어 있습니다. .env 파일을 확인하세요.")
     return value
 
 
 async def run_single_bot() -> None:
-    """1개 봇으로 전체 워크플로우를 테스트."""
+    """1개 봇으로 전체 워크플로우를 테스트합니다."""
     bot = create_single_bot()
     token = _require_token("TOKEN_DIRECTOR", settings.token_director)
     print("🚀 SINGLE_BOT_MODE=true: 단일 봇 테스트 모드로 실행합니다.")
@@ -25,7 +25,7 @@ async def run_single_bot() -> None:
 
 
 async def run_multi_bots() -> None:
-    """11개 봇을 동시에 실행."""
+    """11개 봇을 동시에 실행합니다."""
     bots = create_multi_bots()
 
     token_map = {

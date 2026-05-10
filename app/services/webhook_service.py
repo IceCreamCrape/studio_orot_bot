@@ -1,7 +1,7 @@
 """Make.com Webhook 전송 서비스.
 
-기본값은 비활성화.
-ENABLE_MAKE_WEBHOOK=false이면 실제 전송하지 않고 payload preview만 반환.
+기본값은 비활성화입니다.
+ENABLE_MAKE_WEBHOOK=false이면 실제 전송하지 않고 payload preview만 반환합니다.
 """
 
 from __future__ import annotations

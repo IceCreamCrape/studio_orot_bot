@@ -1,7 +1,7 @@
 """11개 AI 직원의 페르소나 정의.
 
 여기서는 system instruction만 정의하고,
-실제 Gemini 호출은 services/gemini_service.py에서 담당.
+실제 Gemini 호출은 services/gemini_service.py에서 담당합니다.
 """
 
 from __future__ import annotations

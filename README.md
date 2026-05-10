@@ -2,145 +2,142 @@
 
 Discord + Gemini + Make.com 기반 SNS 콘텐츠 자동화 봇입니다.
 
-기본값은 **로컬 테스트 모드**입니다.
+이 버전은 **명령어로 채널 라우팅 설정**이 가능합니다.
 
-- Make.com 전송은 기본 비활성화
-- Gemini API Key가 없으면 mock 응답으로 테스트 가능
-- 11개 토큰이 없어도 `SINGLE_BOT_MODE=true` 상태에서 1개 봇으로 전체 흐름 테스트 가능
-
----
-
-## 1. 폴더 구조
-
-```text
-studio_orot_bot/
-├── app/
-│   ├── main.py
-│   ├── agents/
-│   │   └── persona_models.py
-│   ├── bots/
-│   │   ├── approval_view.py
-│   │   ├── bot_factory.py
-│   │   ├── registry.py
-│   │   └── workflow.py
-│   ├── config/
-│   │   └── settings.py
-│   ├── services/
-│   │   ├── gemini_service.py
-│   │   └── webhook_service.py
-│   └── utils/
-│       ├── discord_format.py
-│       └── image_utils.py
-├── .env.example
-├── Dockerfile
-├── docker-compose.yml
-├── requirements.txt
-└── README.md
-```
-
----
-
-## 2. 빠른 실행
+## 빠른 실행
 
 ```bash
 cp .env.example .env
-```
-
-`.env`에 최소한 이것만 입력하세요.
-
-```env
-TOKEN_DIRECTOR=디스코드_봇_토큰
-SINGLE_BOT_MODE=true
-ENABLE_MAKE_WEBHOOK=false
-USE_MOCK_GEMINI=true
-```
-
-실행:
-
-```bash
 docker compose up -d --build
-```
-
-로그 확인:
-
-```bash
 docker logs -f studio_orot
 ```
 
----
+`.env` 최소 설정:
 
-## 3. 디스코드 테스트 명령어
-
-이미지 없이도 테스트 가능:
-
-```text
-!테스트기획 리빙 인스타 수납 https://link.coupang.com/test 좁은 원룸에 어울리는 베이지 수납함
+```env
+SINGLE_BOT_MODE=true
+USE_MOCK_GEMINI=true
+ENABLE_MAKE_WEBHOOK=false
+TOKEN_DIRECTOR=디스코드_봇_토큰
 ```
 
-이미지를 첨부해서 실제 흐름 테스트:
+## 기본 명령어
 
 ```text
-!기획시작 리빙 인스타 수납 https://link.coupang.com/test 좁은 원룸에 어울리는 베이지 수납함
+!상태
+!gemini테스트
+```
+
+## 채널 라우팅 명령어
+
+형식:
+
+```text
+!채널설정 [카테고리] [단계] [#채널]
 ```
 
 카테고리:
 
 ```text
-건기식 / 식품 / 리빙
+건기식 / 식품 / 주방
 ```
 
-플랫폼:
+단계:
 
 ```text
-인스타 / 쓰레드 / 블로그 / 틱톡
+input     소싱/분석 결과
+text      타겟 전략, 본문, 해시태그
+short     숏폼/틱톡/릴스 결과
+publish   최종 검수 및 발행 버튼
+log       시스템 로그용
+dashboard 대시보드용
+meeting   봇 회의실용
 ```
 
----
+예시:
 
-## 4. Make.com 전송
+```text
+!채널설정 건기식 input #건기식-소싱-input
+!채널설정 건기식 text #건기식-텍스트-pvw
+!채널설정 건기식 short #건기식-숏폼-pvw
+!채널설정 건기식 publish #건기식-송출-pgm
 
-기본값은 꺼져 있습니다.
+!채널설정 식품 input #식품-소싱-input
+!채널설정 식품 text #식품-텍스트-pvw
+!채널설정 식품 short #식품-숏폼-pvw
+!채널설정 식품 publish #식품-송출-pgm
+
+!채널설정 주방 input #주방-소싱-input
+!채널설정 주방 text #주방-텍스트-pvw
+!채널설정 주방 short #주방-숏폼-pvw
+!채널설정 주방 publish #주방-송출-pgm
+```
+
+확인:
+
+```text
+!채널목록
+```
+
+초기화:
+
+```text
+!채널초기화 건기식
+```
+
+## 기획 실행
+
+이미지 없이 테스트:
+
+```text
+!테스트기획 리빙 인스타 수납 https://link.coupang.com/test 좁은 원룸에 어울리는 베이지 수납함
+```
+
+이미지 첨부 테스트:
+
+```text
+!기획시작 리빙 인스타 수납 https://link.coupang.com/test 좁은 원룸용 베이지 수납장
+```
+
+`리빙`은 내부적으로 `주방` 카테고리로 라우팅됩니다.
+
+## 저장 위치
+
+채널 설정은 아래 파일에 저장됩니다.
+
+```text
+./data/channel_routes.json
+```
+
+컨테이너를 재시작해도 유지됩니다.
+
+## Make.com
+
+기본값:
 
 ```env
 ENABLE_MAKE_WEBHOOK=false
 ```
 
-이 상태에서는 버튼을 눌러도 실제 전송하지 않고, 디스코드에 payload preview만 보여줍니다.
+이 상태에서는 발행 버튼을 눌러도 실제 전송하지 않고 payload preview만 보여줍니다.
 
-실제 전송을 켜려면:
+## Discord Developer Portal 필수 설정
 
-```env
-ENABLE_MAKE_WEBHOOK=true
-MAKE_WEBHOOK_URL=https://hook.make.com/your-webhook
+Bot 메뉴에서:
+
+```text
+MESSAGE CONTENT INTENT = ON
 ```
 
----
+OAuth2 권한 추천:
 
-## 5. Discord Developer Portal 설정
-
-봇에서 반드시 켜야 합니다.
-
-- Message Content Intent
-- Server Members Intent는 필수 아님
-- Presence Intent도 필수 아님
-
-초대 URL 권한:
-
-- Send Messages
-- Read Message History
-- Attach Files
-- Use Slash Commands는 현재 필수 아님
-- Embed Links
-
----
-
-## 6. 모드 설명
-
-### SINGLE_BOT_MODE=true
-
-1개 봇으로 전체 직원 역할을 시뮬레이션합니다.  
-로컬 테스트 추천 모드입니다.
-
-### SINGLE_BOT_MODE=false
-
-11개 봇 토큰으로 실제 멀티 봇을 동시에 실행합니다.
+```text
+View Channels
+Send Messages
+Embed Links
+Attach Files
+Read Message History
+Add Reactions
+Use External Emojis
+Use Application Commands
+```

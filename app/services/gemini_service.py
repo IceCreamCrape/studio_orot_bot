@@ -10,20 +10,25 @@ import asyncio
 from typing import Any
 
 import google.generativeai as genai
+from google.api_core import exceptions as google_exceptions
 
 from app.agents.persona_models import PERSONAS
 from app.config.settings import settings
 
 
 class GeminiService:
-    """Gemini API 래퍼.
-
-    google-generativeai는 동기 호출 기반이므로 asyncio.to_thread로 감싸
-    Discord 이벤트 루프가 멈추지 않도록 합니다.
-    """
+    """Gemini API 래퍼."""
 
     def __init__(self) -> None:
         self.mock_mode = settings.use_mock_gemini or not settings.google_api_key
+
+        self.primary_model = "gemini-2.5-pro"
+        self.fallback_models = [
+            "gemini-2.5-flash",
+            "gemini-2.0-flash",
+            "gemini-1.5-flash",
+        ]
+
         if not self.mock_mode:
             genai.configure(api_key=settings.google_api_key)
 
@@ -34,23 +39,77 @@ class GeminiService:
         image: Any | None = None,
     ) -> str:
         """페르소나에 맞는 텍스트를 생성합니다."""
+
+        print("🔥 Gemini generate 호출됨", flush=True)
+        print("🔥 mock_mode =", self.mock_mode, flush=True)
+        print("🔥 api_key exists =", bool(settings.google_api_key), flush=True)
+        print("🔥 persona_key =", persona_key, flush=True)
+
         persona = PERSONAS[persona_key]
 
         if self.mock_mode:
             return self._mock_response(persona.display_name, prompt)
 
-        def _call() -> str:
-            model = genai.GenerativeModel(
-                model_name="gemini-2.5-pro",
-                system_instruction=persona.system_instruction,
-            )
-            if image is not None:
-                response = model.generate_content([image, prompt])
-            else:
-                response = model.generate_content(prompt)
-            return getattr(response, "text", "") or "응답이 비어 있습니다."
+        model_chain = [self.primary_model] + self.fallback_models
+        last_error: Exception | None = None
 
-        return await asyncio.to_thread(_call)
+        for model_name in model_chain:
+            try:
+                print(f"🚀 Gemini 모델 호출 시도: {model_name}", flush=True)
+                return await asyncio.to_thread(
+                    self._call_gemini,
+                    model_name,
+                    persona.system_instruction,
+                    prompt,
+                    image,
+                )
+
+            except google_exceptions.ResourceExhausted as exc:
+                last_error = exc
+                print(f"⚠️ 쿼터 초과: {model_name} → 다음 모델로 전환", flush=True)
+                continue
+
+            except google_exceptions.NotFound as exc:
+                last_error = exc
+                print(f"⚠️ 모델 없음/접근 불가: {model_name} → 다음 모델로 전환", flush=True)
+                continue
+
+            except google_exceptions.PermissionDenied as exc:
+                last_error = exc
+                print(f"⚠️ 권한 문제: {model_name} → 다음 모델로 전환", flush=True)
+                continue
+
+            except Exception as exc:
+                last_error = exc
+                print(f"❌ Gemini 오류: {model_name}: {exc}", flush=True)
+                continue
+
+        return (
+            "❌ Gemini 호출 실패\n"
+            "모든 모델 호출이 실패했습니다.\n\n"
+            f"마지막 오류:\n{last_error}"
+        )
+
+    @staticmethod
+    def _call_gemini(
+        model_name: str,
+        system_instruction: str,
+        prompt: str,
+        image: Any | None = None,
+    ) -> str:
+        """실제 Gemini API를 동기 호출합니다."""
+
+        model = genai.GenerativeModel(
+            model_name=model_name,
+            system_instruction=system_instruction,
+        )
+
+        if image is not None:
+            response = model.generate_content([image, prompt])
+        else:
+            response = model.generate_content(prompt)
+
+        return getattr(response, "text", "") or "응답이 비어 있습니다."
 
     @staticmethod
     def _mock_response(display_name: str, prompt: str) -> str:
