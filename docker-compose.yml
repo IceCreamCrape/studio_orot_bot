@@ -1,0 +1,7 @@
+services:
+  studio-orot:
+    build: .
+    container_name: studio_orot
+    restart: unless-stopped
+    env_file:
+      - .env
