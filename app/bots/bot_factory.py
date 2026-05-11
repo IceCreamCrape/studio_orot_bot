@@ -250,6 +250,11 @@ class AdminCommands(app_commands.Group):
             return
 
         mapping = {
+            "공통" : {
+                "log": "🚨시스템-로그",
+                "dashboard": "📊일일-대시보드",
+                "meeting": "봇회의실",
+            },
             "건기식": {
                 "input": "건기식-소싱-input",
                 "text": "건기식-텍스트-pvw",
